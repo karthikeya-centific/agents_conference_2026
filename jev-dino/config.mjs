@@ -13,7 +13,7 @@
 
 export const KEYS = {
   // TypeSafe AI key (Jev). Create one at https://console.typesafe.ai
-  TYPESAFE_API_KEY: 'PASTE_TYPESAFE_KEY_HERE',
+  TYPESAFE_API_KEY: 'apikey_28100c957e04a934e35818456bf00d33fd1_29938d280de36249237572a1461a8af465ece92e14291ecc1f43763d74a8fdb0',
 
   // OpenRouter key. Create one at https://openrouter.ai/keys
   // Needed for the "any LLM" comparison and for calling Jev through OpenRouter.

@@ -104,7 +104,7 @@ export class IOPanel {
     return { el, n, startedAt: performance.now() };
   }
 
-  complete(entry, { ok, error, stale, result, parsed, totalMs, upstreamMs, stateAgeMs }) {
+  complete(entry, { ok, error, stale, result, parsed, applied, totalMs, upstreamMs, stateAgeMs }) {
     const el = entry.el;
     el.classList.remove('pending');
     el.classList.add(ok ? 'ok' : 'error');
@@ -131,6 +131,7 @@ export class IOPanel {
     if (stateAgeMs != null) meta.push(`state was ${fmtMs(stateAgeMs)} old when the answer landed`);
     if (result && result.request_id) meta.push(`id ${result.request_id}`);
     if (parsed && parsed.tokensIn) meta.push(`${parsed.tokensIn} tokens in`);
+    if (applied) meta.push(`→ ${applied}`);
     el.querySelector('.res-meta').textContent = meta.join(' · ');
 
     const reqMeta = el.querySelector('.req-meta');
@@ -193,8 +194,10 @@ function summarizeState(state) {
   const o = state && state.nearest_obstacle;
   if (!o) return 'no obstacle';
   const what = o.kind === 'pterodactyl' ? `ptero ${o.flying_height.split(' ')[0]}` : `${o.count > 1 ? o.count + '× ' : ''}${o.size} cactus`;
-  const timing = o.jump_timing ? ` · ${o.jump_timing.split(' ')[0]}` : '';
-  return `${what} · ${o.distance_px} px · ${o.arrives_in_ms} ms${timing}`;
+  let timing = '';
+  if (o.jump_timing) timing = ` · ${o.jump_timing.split(' ')[0]}`;
+  else if (o.time_to_spare_ms != null) timing = o.jump_still_possible_after_answer ? ` · ${o.time_to_spare_ms} ms spare` : ' · too late';
+  return `#${o.id} ${what} · ${o.distance_px} px · ${o.arrives_in_ms} ms${timing}`;
 }
 
 export function renderProbabilities(parsed) {
@@ -203,6 +206,10 @@ export function renderProbabilities(parsed) {
     return `<div class="prob ${k === parsed.action ? 'chosen' : ''}"><span class="lbl">${k}</span><span class="bar"><i style="width:${(p * 100).toFixed(1)}%"></i></span><span class="val">${(p * 100).toFixed(0)}%</span></div>`;
   });
   let extra = '';
+  if (parsed.nextAction) {
+    const np = parsed.nextProbabilities;
+    extra += `<div class="next-action">next obstacle: <b>${escapeHtml(parsed.nextAction)}</b>${np ? ` (${['jump', 'duck', 'run'].map((k) => `${k} ${((np[k] || 0) * 100).toFixed(0)}%`).join(' · ')})` : ''}</div>`;
+  }
   if (parsed.danger && parsed.danger.probabilities) {
     const d = parsed.danger;
     const cells = Object.keys(d.probabilities).sort().map((k) => `<span class="dcell" title="${escapeHtml(d.legend ? d.legend[k] : '')}"><i style="height:${(d.probabilities[k] * 100).toFixed(0)}%"></i><b>${k}</b></span>`).join('');

@@ -43,19 +43,19 @@ function send(res, status, payload, extraHeaders = {}) {
 }
 
 /** Pull the facts the rule needs out of a JSON state, a prose state, or a chat transcript. */
-function extractFacts(anything) {
+function extractFacts(anything, which = 'nearest') {
   let obj = anything && typeof anything === 'object' ? anything : null;
   if (!obj) {
     const text = String(anything == null ? '' : anything);
     const m = text.match(/\{[\s\S]*\}/); // a chat transcript embeds the JSON state
     if (m) { try { obj = JSON.parse(m[0]); } catch { obj = null; } }
-    if (!obj || !('nearest_obstacle' in obj)) return factsFromProse(text);
+    if (!obj || !('nearest_obstacle' in obj)) return factsFromProse(text, which);
   }
-  return factsFromObject(obj);
+  return factsFromObject(obj, which);
 }
 
-function factsFromObject(state) {
-  const o = state.nearest_obstacle;
+function factsFromObject(state, which = 'nearest') {
+  const o = which === 'next' ? state.next_obstacle : state.nearest_obstacle;
   const t = state.timing || {};
   if (!o) return { hasObstacle: false };
   return {
@@ -68,9 +68,16 @@ function factsFromObject(state) {
   };
 }
 
-function factsFromProse(text) {
-  if (/no obstacle in sight/i.test(text) || !/Nearest obstacle:/i.test(text)) return { hasObstacle: false };
-  const nearest = text.slice(text.indexOf('Nearest obstacle:'), text.search(/Behind it:|Your recent latency/) > 0 ? text.search(/Behind it:|Your recent latency/) : undefined);
+function factsFromProse(text, which = 'nearest') {
+  if (which === 'next') {
+    const i = text.indexOf('Behind it');
+    if (i < 0) return { hasObstacle: false };
+    const seg = text.slice(i, text.indexOf('Your recent latency') > i ? text.indexOf('Your recent latency') : undefined);
+    const flying = seg.match(/flying (low|mid|high)/i);
+    return { hasObstacle: true, airborne: false, flying: flying ? flying[1].toLowerCase() : null, timing: null, arrivesMs: null, window: null };
+  }
+  if (/no obstacle (in sight|to decide about)/i.test(text) || !/Nearest obstacle/i.test(text)) return { hasObstacle: false };
+  const nearest = text.slice(text.indexOf('Nearest obstacle'), text.search(/Behind it|Your recent latency/) > 0 ? text.search(/Behind it|Your recent latency/) : undefined);
   const flying = nearest.match(/flying (low|mid|high)/i);
   const timing = nearest.match(/Jump timing: ([a-z_]+)/i);
   const arrives = nearest.match(/about (-?\d+) ms after your answer lands/i);
@@ -92,8 +99,10 @@ function decide(facts) {
     const soon = facts.arrivesMs == null || facts.arrivesMs < 700;
     return { action: soon ? 'duck' : 'run', danger: soon ? 2 : 1 };
   }
-  if (facts.airborne) return { action: 'run', danger: 1 };
   if (facts.flying === 'high') return { action: 'run', danger: 1 };
+  // Harness-timed contract: no timing facts in the state → just say what to do about it.
+  if (!facts.timing && !facts.window) return { action: 'jump', danger: facts.arrivesMs != null && facts.arrivesMs < 600 ? 2 : 1 };
+  if (facts.airborne) return { action: 'run', danger: 1 };
   let timing = facts.timing;
   if (!timing && facts.window && facts.arrivesMs != null) {
     const hi = Math.max(facts.window.start, facts.window.end);
@@ -120,11 +129,13 @@ function distribution(keys, winner, confidence) {
 function answerQuestions(state, questions) {
   const facts = extractFacts(state);
   const verdict = decide(facts);
+  const nextVerdict = decide(extractFacts(state, 'next'));
   const answers = {};
   for (const [name, q] of Object.entries(questions || {})) {
     if (q.type === 'choice') {
       const keys = Object.keys(q.criteria || {});
-      let pick = keys.includes(verdict.action) ? verdict.action : keys[0];
+      const wanted = /next/i.test(name) ? nextVerdict.action : verdict.action;
+      let pick = keys.includes(wanted) ? wanted : keys[0];
       const conf = Number((0.72 + Math.random() * 0.26).toFixed(4));
       const probabilities = distribution(keys, pick, conf);
       answers[name] = { type: 'choice', choice: pick, confidence: probabilities[pick], probabilities };
@@ -178,7 +189,8 @@ async function handle(req, res) {
       await sleep(jitter(model.includes('slow') ? LLM_LATENCY_MS * 2 : LLM_LATENCY_MS));
       const userMsg = (body.messages || []).filter((m) => m.role === 'user').pop();
       const { verdict } = answerQuestions(userMsg ? userMsg.content : '', { action: { type: 'choice', criteria: { jump: null, duck: null, run: null } } });
-      const content = JSON.stringify({ action: verdict.action, danger: verdict.danger, reason: 'mock rule of thumb' });
+      const nextVerdict = decide(extractFacts(userMsg ? userMsg.content : '', 'next'));
+      const content = JSON.stringify({ action: verdict.action, next_action: nextVerdict.action, danger: verdict.danger, reason: 'mock rule of thumb' });
       const promptTokens = approxTokens(body.messages);
       return send(res, 200, {
         id: `gen-mock-${Date.now()}`,

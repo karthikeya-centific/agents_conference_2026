@@ -11,6 +11,8 @@ export const FRAME_MS = 1000 / RUNNER.fps;
 export const GROUND_LINE_Y = CANVAS.height - CANVAS.bottomPad; // 140: feet and cactus bases sit here
 
 const OBSTACLE_TYPES = Object.keys(OBSTACLES);
+const JITTER_FRAMES = 1.5;      // a jump only counts as safe if it also survives the obstacle shifted by ±this
+const MAX_DELAY_FRAMES = 90;    // how far ahead (in frames) the jump window is searched
 const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const intersects = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 
@@ -78,6 +80,8 @@ export class DinoGame {
     };
     this.stats = { jumps: 0, ducks: 0 };
     this.crashInfo = null;
+    this.intents = new Map();        // obstacle id -> { action: 'jump' | 'duck', seq }
+    this.intentDuckActive = false;
     this.status = 'idle';
   }
 
@@ -164,6 +168,7 @@ export class DinoGame {
 
     this.updateHorizon(frames);
     this.updateClouds(frames);
+    if (hasObstacles) this.executeIntents();
     if (hasObstacles) this.updateObstacles(dt, frames);
     this.updateTrex(dt, frames);
 
@@ -313,6 +318,148 @@ export class DinoGame {
     };
   }
 
+  // ------------------------------------------------- timing & intents --
+
+  /**
+   * In which frames, counted from the moment the obstacle is at `startX`, could a full jump start and
+   * get past `o`? Simulated frame by frame with the real jump curve and Chromium's collision boxes,
+   * requiring survival with the obstacle shifted by ±JITTER_FRAMES as well.
+   * Returns { runsUnder, alreadyPassed, firstSafeDelay, lastSafeDelay } (delays in frames, or null).
+   */
+  safeJumpDelays(o, startX = o.x, relSpeed = this.speed + (o.speedOffset || 0)) {
+    const trexX = this.trex.x;
+    const groundY = this.groundY;
+    const running = TREX.collisionBoxes.running;
+    const heights = this.jumpProfile(this.speed).heights;
+    const survives = (x0, heightAt) => {
+      for (let k = 0; k <= 600; k++) {
+        const ox = x0 - relSpeed * k;
+        if (ox + o.width <= trexX) return true; // obstacle has passed
+        if (trexHitsObstacle(trexX, groundY - heightAt(k), running, o, ox)) return false;
+      }
+      return true;
+    };
+    const runsUnder = survives(o.x, () => 0); // a running dino gets past it (high pterodactyl), judged from now
+    if (runsUnder) return { runsUnder, alreadyPassed: false, firstSafeDelay: null, lastSafeDelay: null };
+    if (startX < trexX + TREX.width) return { runsUnder, alreadyPassed: true, firstSafeDelay: null, lastSafeDelay: null };
+    const shift = relSpeed * JITTER_FRAMES;
+    const safe = (d) => {
+      const heightAt = (k) => (k < d || k - d >= heights.length ? 0 : heights[k - d]);
+      return survives(startX, heightAt) && survives(startX + shift, heightAt) && survives(startX - shift, heightAt);
+    };
+    let first = null;
+    let last = null;
+    for (let d = 0; d <= MAX_DELAY_FRAMES; d++) {
+      if (safe(d)) { if (first == null) first = d; last = d; }
+      else if (first != null) break; // the safe window is one contiguous interval
+    }
+    return { runsUnder, alreadyPassed: false, firstSafeDelay: first, lastSafeDelay: last };
+  }
+
+  /**
+   * Record what to do about an obstacle. The engine presses the key at the right frame:
+   * 'jump' starts the jump at the first safe moment (after landing if airborne), 'duck' crouches
+   * shortly before the obstacle and holds until it has passed, 'run' cancels a plan.
+   * `seq` orders answers: an older answer never overrides a newer one for the same obstacle.
+   */
+  setIntent(obstacleId, action, seq = 0) {
+    const existing = this.intents.get(obstacleId);
+    if (existing && existing.seq > seq) return false;
+    if (action === 'run') { this.intents.delete(obstacleId); return true; }
+    if (action !== 'jump' && action !== 'duck') return false;
+    this.intents.set(obstacleId, { action, seq, since: this.runningTime });
+    return true;
+  }
+
+  plannedActions() {
+    return Array.from(this.intents.entries()).map(([id, i]) => `${i.action} → #${id}`);
+  }
+
+  executeIntents() {
+    if (this.intents.size === 0 && !this.intentDuckActive) return;
+    const t = this.trex;
+    let holdDuck = false;
+    let jumpedThisFrame = false;
+    for (const o of this.obstacles) {
+      const intent = this.intents.get(o.id);
+      if (!intent) continue;
+      if (o.x + o.width <= t.x) { this.intents.delete(o.id); continue; } // it is behind us
+      const rel = this.speed + (o.speedOffset || 0);
+      const distance = o.x - (t.x + TREX.width);
+      if (intent.action === 'duck') {
+        const soon = (distance / rel) * FRAME_MS < 1000;
+        if (soon) {
+          holdDuck = true;
+          if (!t.ducking) { this.setDuck(true); this.intentDuckActive = true; } // in the air: speed drop + crouch on landing
+        }
+        continue;
+      }
+      if (intent.action === 'jump' && !jumpedThisFrame) {
+        if (t.jumping) continue; // wait for the landing
+        const w = this.safeJumpDelays(o, o.x, rel);
+        const isNearest = !this.obstacles.some((p) => p !== o && p.x < o.x && p.x + p.width > t.x);
+        const lastChance = isNearest && !w.runsUnder && w.firstSafeDelay == null && distance <= rel * 8; // nothing safe left: try anyway
+        const pointless = isNearest && w.runsUnder && distance <= rel * 20;                                // the model asked; harmless
+        // A jump planned for a farther obstacle must not be started under or into a nearer one.
+        if ((w.firstSafeDelay === 0 && this.jumpNowSafeAgainstAll()) || lastChance || pointless) {
+          if (this.jump()) { jumpedThisFrame = true; this.intents.delete(o.id); }
+        }
+      }
+    }
+    for (const id of Array.from(this.intents.keys())) {
+      if (!this.obstacles.some((o) => o.id === id)) this.intents.delete(id);
+    }
+    if (!holdDuck && this.intentDuckActive) { this.setDuck(false); this.intentDuckActive = false; }
+  }
+
+  /** Would a full jump started this frame get past every obstacle currently ahead (with the jitter margin)? */
+  jumpNowSafeAgainstAll() {
+    const trexX = this.trex.x;
+    const groundY = this.groundY;
+    const running = TREX.collisionBoxes.running;
+    const heights = this.jumpProfile(this.speed).heights;
+    const heightAt = (k) => (k < heights.length ? heights[k] : 0);
+    for (const o of this.obstacles) {
+      if (o.x + o.width <= trexX) continue;
+      const rel = this.speed + (o.speedOffset || 0);
+      const survives = (x0) => {
+        for (let k = 0; k <= 600; k++) {
+          const ox = x0 - rel * k;
+          if (ox + o.width <= trexX) return true;
+          if (k >= heights.length && ox > trexX + TREX.width) return true; // landed before it is anywhere near
+          if (trexHitsObstacle(trexX, groundY - heightAt(k), running, o, ox)) return false;
+        }
+        return true;
+      };
+      const shift = rel * JITTER_FRAMES;
+      if (!survives(o.x) || !survives(o.x + shift) || !survives(o.x - shift)) return false;
+    }
+    return true;
+  }
+
+  /** True if the jump in progress gets past `o` without touching it (from the dino's current height and speed). */
+  willClearInCurrentJump(o) {
+    const t = this.trex;
+    if (!t.jumping) return false;
+    const rel = this.speed + (o.speedOffset || 0);
+    const running = TREX.collisionBoxes.running;
+    let y = t.y;
+    let vy = t.vy;
+    let reachedMin = t.reachedMinHeight;
+    for (let k = 0; k < 400; k++) {
+      const ox = o.x - rel * k;
+      if (ox + o.width <= t.x) return true;
+      if (trexHitsObstacle(t.x, y, running, o, ox)) return false;
+      if (k > 0 && y >= this.groundY) return false; // landed while it is still ahead
+      y += t.speedDrop ? vy * TREX.speedDropCoefficient : vy;
+      vy += TREX.gravity;
+      if (y < this.groundY - TREX.minJumpHeight) reachedMin = true;
+      if (y < TREX.maxJumpHeight && reachedMin && vy < TREX.dropVelocity) vy = TREX.dropVelocity;
+      if (y > this.groundY) y = this.groundY;
+    }
+    return false;
+  }
+
   // ------------------------------------------------------- agent support --
 
   /** Everything the agent needs to describe the world to a model. */
@@ -322,7 +469,11 @@ export class DinoGame {
       .filter((o) => o.x + o.width > t.x)
       .sort((a, b) => a.x - b.x)
       .slice(0, 3)
-      .map((o) => ({ id: o.id, type: o.type, size: o.size, x: o.x, y: o.y, width: o.width, height: o.height, speedOffset: o.speedOffset, boxes: o.boxes }));
+      .map((o) => ({
+        id: o.id, type: o.type, size: o.size, x: o.x, y: o.y, width: o.width, height: o.height, speedOffset: o.speedOffset, boxes: o.boxes,
+        clearing: this.willClearInCurrentJump(o),                       // the current jump gets past it: nothing left to decide
+        planned: this.intents.has(o.id) ? this.intents.get(o.id).action : null,
+      }));
     return {
       frame: this.frameCount,
       timeMs: this.runningTime,

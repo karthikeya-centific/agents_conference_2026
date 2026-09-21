@@ -36,10 +36,11 @@
       <section id="setup" class="card setup">
         <h1>Who plays?</h1>
         <p class="lede">
-          Several times a second the game describes its state in text and asks one typed question:
-          <em>which key should be pressed right now?</em> The model answers, the game presses the key, and it asks again.
-          Nothing is remembered between calls. <b>Jev</b>, TypeSafe's System One model, answers such questions in roughly
-          100–300&nbsp;ms with a probability for every option and never generates text. Compare it with any LLM on OpenRouter.
+          Several times a second the game describes its state in text and asks typed questions:
+          <em>what should the dino do about the nearest obstacle, and about the one after it?</em> The model answers
+          jump, duck or run per obstacle; the game presses the key at the right frame. Nothing is remembered between calls.
+          <b>Jev</b>, TypeSafe's System One model, answers such questions in roughly 100–500&nbsp;ms with a probability for
+          every option and never generates text. Compare it with any LLM on OpenRouter.
         </p>
 
         <div class="players" id="players">
@@ -121,6 +122,14 @@
         <details class="advanced">
           <summary>Advanced</summary>
           <div class="setting">
+            <label for="execution">Who times the key press</label>
+            <select id="execution">
+              <option value="scheduled">Harness-timed — the model says jump / duck / run per obstacle, the game presses at the right frame</option>
+              <option value="reflex">Reflex — the key is pressed the instant the answer lands (timing depends on model latency)</option>
+            </select>
+            <small>Harness-timed needs one correct answer per obstacle before its jump window closes. Reflex needs a decision to land inside a ~300 ms window, which a 300–500 ms model cannot do reliably.</small>
+          </div>
+          <div class="setting">
             <label for="stateFormat">State format sent to the model</label>
             <select id="stateFormat">
               <option value="json">JSON object</option>
@@ -128,7 +137,7 @@
             </select>
           </div>
           <div class="setting check">
-            <label><input type="checkbox" id="timingAssist" checked> Timing assist — include <code>jump_timing</code> (now / too_early / too_late), computed in code from the jump physics and the model's measured latency. Off: the model gets the raw numbers and the jump window instead.</label>
+            <label><input type="checkbox" id="timingAssist" checked> Timing assist (reflex mode only) — include <code>jump_timing</code> (now / too_early / too_late), computed in code from the jump physics and the model's measured latency. Off: the model gets the raw numbers and the jump window instead.</label>
           </div>
           <div class="setting check">
             <label><input type="checkbox" id="dangerQuestion" checked> Ask a second question in the same call — a <code>danger</code> score (0–3). Jev answers all questions in one pass.</label>
@@ -136,12 +145,12 @@
           <div class="setting">
             <label for="cadence">Call cadence</label>
             <select id="cadence">
-              <option value="auto">Auto — Jev &amp; scripted: a new call every interval, in parallel · LLM: one call at a time</option>
-              <option value="interval">A new call every interval, without waiting for the previous answer</option>
+              <option value="auto">Auto — a new call every interval, at most 2 in flight (Jev, scripted and LLMs alike)</option>
+              <option value="interval">A new call every interval, at most 2 in flight</option>
               <option value="sequential">One call at a time: the next request leaves when the answer arrives</option>
             </select>
-            <label for="intervalMs" style="margin-top:6px">Interval <input type="number" id="intervalMs" min="30" max="5000" step="10" value="100"> ms</label>
-            <small>Calls are stateless, so they can overlap: with a 100 ms interval and 300 ms latency, three requests are in flight and a decision lands every 100 ms.</small>
+            <label for="intervalMs" style="margin-top:6px">Interval <input type="number" id="intervalMs" min="30" max="5000" step="10" value="300"> ms</label>
+            <small>Calls are stateless, so two can overlap. More than that queues up at the API and every answer arrives late (a 100 ms interval with 8 in flight measured 1.5–2 s per answer against the real Jev API).</small>
           </div>
           <div class="setting check">
             <label><input type="checkbox" id="showHitboxes"> Show hitboxes on the canvas</label>

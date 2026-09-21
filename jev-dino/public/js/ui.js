@@ -27,6 +27,7 @@ const app = {
   panel: null,
   settings: null,
   orModels: new Map(),
+  pingLatency: {},
   hiScores: {},
   panelClosedByUser: false,
   bannerTimer: 0,
@@ -187,6 +188,9 @@ async function ping(provider) {
       const served = json.response && json.response.model ? ` · model ${json.response.model}` : '';
       out.textContent = `OK · ${json.latency_ms} ms${served}`;
       out.className = 'ping-result ok';
+      // Seed the agent's latency estimate with a real measurement (average of the pings so far).
+      const prev = app.pingLatency[provider];
+      app.pingLatency[provider] = prev ? Math.round(prev * 0.5 + json.latency_ms * 0.5) : json.latency_ms;
     } else {
       const detail = json.response && (json.response.error && (json.response.error.message || json.response.error) || json.response.detail || json.response.message);
       out.textContent = `${json.error || 'failed'}${detail ? ` — ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''}`.slice(0, 240);
@@ -209,6 +213,7 @@ function readSettings() {
     scriptedLatency: Number($('#scriptedLatency').value),
     speed: Number($('#speed').value),
     accelerate: $('#accelerate').checked,
+    execution: $('#execution').value,
     stateFormat: $('#stateFormat').value,
     timingAssist: $('#timingAssist').checked,
     dangerQuestion: $('#dangerQuestion').checked,
@@ -228,6 +233,7 @@ function applySettings(s) {
   if (s.scriptedLatency != null) $('#scriptedLatency').value = s.scriptedLatency;
   if (s.speed != null) $('#speed').value = s.speed;
   if (s.accelerate != null) $('#accelerate').checked = s.accelerate;
+  if (s.execution) $('#execution').value = s.execution;
   if (s.stateFormat) $('#stateFormat').value = s.stateFormat;
   if (s.timingAssist != null) $('#timingAssist').checked = s.timingAssist;
   if (s.dangerQuestion != null) $('#dangerQuestion').checked = s.dangerQuestion;
@@ -265,7 +271,7 @@ function startRun() {
     endpoint: providerInfo ? providerInfo.endpoint : s.player === 'scripted' ? '(rule of thumb in the browser)' : '(no model calls)',
     method: providerInfo ? 'POST' : '',
     stateFormat: s.stateFormat,
-    cadence: s.player === 'human' ? '' : (effectiveCadence(s) === 'interval' ? `a new call every ${s.intervalMs} ms, answers applied as they land` : 'one call at a time'),
+    cadence: s.player === 'human' ? '' : (effectiveCadence(s) === 'interval' ? `a new call every ${s.intervalMs} ms, at most 2 in flight` : 'one call at a time') + (s.execution === 'reflex' ? ' · reflex: key pressed when the answer lands' : ' · harness-timed: the game presses at the right frame'),
     note: s.player === 'scripted' ? 'The scripted bot applies a fixed if/else to the same state, with artificial latency. It is the baseline, not a model.' : s.player === 'human' ? 'Keyboard: Space / ↑ jump, ↓ duck.' : '',
   });
   const cadence = effectiveCadence(s) === 'interval' ? `a call every ${s.intervalMs} ms` : 'one call at a time';
@@ -290,6 +296,8 @@ function startRun() {
       game: app.game,
       panel: app.panel,
       options: {
+        execution: s.execution,
+        initialLatencyMs: app.pingLatency[s.player] || null,
         stateFormat: s.stateFormat,
         timingAssist: s.timingAssist,
         dangerQuestion: s.dangerQuestion,
@@ -307,7 +315,7 @@ function startRun() {
 
 function effectiveCadence(s) {
   if (s.cadence === 'interval' || s.cadence === 'sequential') return s.cadence;
-  return s.player === 'openrouter_chat' ? 'sequential' : 'interval';
+  return 'interval';
 }
 
 function pricingFor(s) {
@@ -365,10 +373,11 @@ function resetHud() {
   $('#hudState').textContent = app.settings && app.settings.player === 'human' ? 'You are playing; no model is called.' : 'waiting for the first call…';
 }
 
-function onDecision({ parsed, error, stale, state, upstreamMs, stats }) {
+function onDecision({ parsed, error, stale, applied, state, upstreamMs, stats }) {
   const actionEl = $('#hudAction');
   if (parsed) {
     actionEl.textContent = parsed.action.toUpperCase() + (stale ? ' (stale)' : '');
+    actionEl.title = applied || '';
     actionEl.className = `hud-action ${parsed.action}${stale ? ' stale' : ''}`;
     $('#hudProbs').innerHTML = renderProbabilities({ ...parsed, danger: null, reason: parsed.reason && parsed.reason.length < 80 ? parsed.reason : '', reasoning: null });
     if (parsed.danger && parsed.danger.score != null) {
@@ -394,12 +403,16 @@ function onDecision({ parsed, error, stale, state, upstreamMs, stats }) {
 function describeState(state) {
   if (!state) return '—';
   const o = state.nearest_obstacle;
-  const dino = `dino ${state.dino.state}${state.dino.state === 'jumping' ? ` (${state.dino.height_above_ground_px} px up, lands in ${state.dino.lands_in_ms} ms)` : ''} at ${state.speed_px_per_s} px/s`;
-  if (!o) return `${dino} · no obstacle in sight · latency ${state.timing.your_recent_latency_ms} ms`;
+  const dino = `dino ${state.dino.state}${state.dino.state === 'jumping' ? ` (${state.dino.height_above_ground_px} px up, lands in ${state.dino.lands_in_ms} ms${state.dino.currently_jumping_over ? `, clearing a ${state.dino.currently_jumping_over}` : ''})` : ''} at ${state.speed_px_per_s} px/s`;
+  if (!o) return `${dino} · nothing to decide about · latency ${state.timing.your_recent_latency_ms} ms`;
   const what = o.kind === 'pterodactyl' ? `pterodactyl ${o.flying_height}` : `${o.count > 1 ? o.count + ' × ' : ''}${o.size} cactus`;
-  const timing = o.jump_timing ? ` · jump_timing: ${o.jump_timing}` : state.timing.jump_window_ms ? ` · jump window ${state.timing.jump_window_ms.start_ms}→${state.timing.jump_window_ms.end_ms} ms` : '';
+  let timing = '';
+  if (o.jump_timing) timing = ` · jump_timing: ${o.jump_timing}`;
+  else if (state.timing.jump_window_ms) timing = ` · jump window ${state.timing.jump_window_ms.start_ms}→${state.timing.jump_window_ms.end_ms} ms`;
+  else if (o.time_to_spare_ms != null) timing = o.jump_still_possible_after_answer ? ` · ${o.time_to_spare_ms} ms to spare after the answer lands` : ' · too late for a jump once the answer lands';
   const next = state.next_obstacle ? ` · next: ${state.next_obstacle.kind === 'pterodactyl' ? 'pterodactyl' : state.next_obstacle.size + ' cactus'} in ${state.next_obstacle.arrives_in_ms} ms` : '';
-  return `${dino} · ${what}, ${o.distance_px} px ahead, arrives in ${o.arrives_in_ms} ms (${o.arrives_in_ms_when_answer_lands} ms after the answer lands)${timing}${next}`;
+  const planned = app.game.intents && app.game.intents.size ? ` · planned: ${app.game.plannedActions().join(', ')}` : '';
+  return `${dino} · #${o.id} ${what}, ${o.distance_px} px ahead, arrives in ${o.arrives_in_ms} ms (${o.arrives_in_ms_when_answer_lands} ms after the answer lands)${timing}${next}${planned}`;
 }
 
 function escapeHtml(s) {
