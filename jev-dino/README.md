@@ -12,36 +12,34 @@ an LLM needs one to several seconds and usually dies on the first cactus. That c
 
 ---
 
-## Run it
+## Quick start (two minutes)
 
-Requirements: Node.js 20 or newer. No dependencies, no build step.
+1. Install **Node.js 20 or newer** from https://nodejs.org. Nothing else to install: no `npm install`, no build.
+2. Open `config.mjs` (next to `server.mjs`) and paste your keys:
 
-```bash
-cd jev-dino
-node server.mjs          # then open http://localhost:8787
-```
+   ```js
+   export const KEYS = {
+     TYPESAFE_API_KEY: 'PASTE_TYPESAFE_KEY_HERE',    // Jev — https://console.typesafe.ai
+     OPENROUTER_API_KEY: 'PASTE_OPENROUTER_KEY_HERE',  // optional — https://openrouter.ai/keys
+   };
+   ```
 
-Keys are **hardcoded in `config.mjs`** (demo setup):
+3. Start the server from the folder that contains `server.mjs`, then open the page:
 
-```js
-export const KEYS = {
-  TYPESAFE_API_KEY: 'PASTE_TYPESAFE_KEY_HERE',    // https://console.typesafe.ai
-  OPENROUTER_API_KEY: 'PASTE_OPENROUTER_KEY_HERE',  // https://openrouter.ai/keys
-};
-```
+   ```bash
+   node server.mjs        # → http://localhost:8787
+   ```
 
-Paste a key, restart the server, and that player becomes selectable on the start screen (players without a
-key are greyed out and say which line to fill). Environment variables of the same name work as a fallback.
+4. Pick a player, set the speed, press **Start**. The **Show Model I/O** button (top right) opens the live panel
+   with every call and answer.
+
+* **No keys yet?** `node server.mjs --mock` runs the whole thing against an offline imitation of both APIs.
+* **Before a demo:** press **Test call** on the Jev card. It makes one real request and shows the latency.
+* Players whose key is missing are greyed out and say which line of `config.mjs` to fill. Environment variables
+  with the same names work as a fallback.
+
 The keys are only ever read by `server.mjs`; the browser talks to the local server, which adds the
 `Authorization` header. This is also *required*: `api.typesafe.ai` rejects browser origins (CORS).
-
-Dry run without any keys or network:
-
-```bash
-node server.mjs --mock   # starts an offline imitation of both APIs in-process
-```
-
-Use **Test call** on a player card before a demo: it makes one real request and shows the round-trip latency.
 
 ---
 
@@ -188,7 +186,7 @@ For the LLM player the *same* state and rules are sent as a system + user prompt
 ## Files
 
 ```
-jev-dino/
+./
 ├─ server.mjs            static files + /api/decide, /api/models, /api/ping, /api/config (keys never leave here)
 ├─ config.mjs            ← PASTE KEYS HERE; model names, port, pricing
 ├─ dev/mock-upstream.mjs offline imitation of both APIs (node server.mjs --mock)
@@ -208,5 +206,5 @@ jev-dino/
   `typesafe/jev-1.13` returns 404, use the id shown on https://openrouter.ai/typesafe (editable on the card).
 * Models that reject `response_format` or `temperature` are retried automatically with a simpler request.
 * Cost: Jev at ~450 input tokens per call and 10 calls/s is about $0.70 per hour of play.
-* Keys in `config.mjs` are in the repo on purpose for this demo — don't commit real keys to a shared repository
-  you don't control.
+* Keys in `config.mjs` are hardcoded on purpose for this demo. Keep the repository private, and don't push real
+  keys to a repository you don't control.

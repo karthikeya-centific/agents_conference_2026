@@ -110,7 +110,7 @@ async function forward(provider, pathname, method, body, { optionalKey = false }
       ok: false,
       status: 401,
       latency_ms: 0,
-      error: `${provider.keyName} is not set. Paste it into jev-dino/config.mjs (or export it as an environment variable) and restart the server.`,
+      error: `${provider.keyName} is not set. Paste it into config.mjs (next to server.mjs) or export it as an environment variable, then restart the server.`,
     };
   }
   const url = provider.base() + pathname;

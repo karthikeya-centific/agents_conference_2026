@@ -82,7 +82,7 @@ async function loadConfig() {
       radio.disabled = false;
       card.classList.remove('disabled');
     } else {
-      stat.innerHTML = `key missing — paste <code>${info.keyName}</code> into <code>jev-dino/config.mjs</code> and restart`;
+      stat.innerHTML = `key missing — paste <code>${info.keyName}</code> into <code>config.mjs</code> and restart the server`;
       stat.className = 'keystat missing';
       radio.disabled = true;
       card.classList.add('disabled');
