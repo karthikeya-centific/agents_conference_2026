@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jev plays Dino</title>
+  <meta name="description" content="Chrome's T-Rex runner played live by TypeSafe's Jev (a System One decision model) or any LLM on OpenRouter, with every model call shown in real time.">
+  <link rel="icon" href="assets/favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">🦖</span>
+      <div>
+        <b>Jev plays Dino</b>
+        <small>System One model demo · TypeSafe Jev vs. any LLM</small>
+      </div>
+    </div>
+    <div class="pills" id="pills" hidden>
+      <span class="pill" id="pillPlayer">—</span>
+      <span class="pill mono" id="pillModel">—</span>
+      <span class="pill" id="pillLatency">— ms</span>
+      <span class="pill" id="pillRate">— calls/s</span>
+    </div>
+    <div class="top-actions">
+      <span class="ribbon" id="mockRibbon" hidden>MOCK MODE · no real model calls</span>
+      <button class="btn ghost" id="btnPanelToggle" aria-expanded="false" aria-controls="panel">Show Model I/O ▸</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <main class="stage">
+
+      <!-- ============================ start screen ============================ -->
+      <section id="setup" class="card setup">
+        <h1>Who plays?</h1>
+        <p class="lede">
+          Several times a second the game describes its state in text and asks one typed question:
+          <em>which key should be pressed right now?</em> The model answers, the game presses the key, and it asks again.
+          Nothing is remembered between calls. <b>Jev</b>, TypeSafe's System One model, answers such questions in roughly
+          100–300&nbsp;ms with a probability for every option and never generates text. Compare it with any LLM on OpenRouter.
+        </p>
+
+        <div class="players" id="players">
+          <label class="player" data-provider="typesafe">
+            <input type="radio" name="player" value="typesafe" checked>
+            <div class="player-body">
+              <div class="player-title">Jev <small>TypeSafe API · direct</small></div>
+              <p>State + typed questions in, one probability distribution out. <code>POST api.typesafe.ai/v1/systemone</code></p>
+              <div class="player-row"><label class="inline">model <input id="modelTypesafe" placeholder="jev-latest" spellcheck="false"></label></div>
+              <div class="player-row status">
+                <span class="keystat" data-key="typesafe">checking key…</span>
+                <button type="button" class="btn small ping" data-provider="typesafe">Test call</button>
+                <span class="ping-result" data-provider="typesafe"></span>
+              </div>
+            </div>
+          </label>
+
+          <label class="player" data-provider="openrouter_decisions">
+            <input type="radio" name="player" value="openrouter_decisions">
+            <div class="player-body">
+              <div class="player-title">Jev <small>via OpenRouter · Decisions API</small></div>
+              <p>Same request body, routed through OpenRouter. <code>POST openrouter.ai/api/alpha/decisions</code></p>
+              <div class="player-row"><label class="inline">model <input id="modelOrJev" placeholder="typesafe/jev-1.13" spellcheck="false"></label></div>
+              <div class="player-row status">
+                <span class="keystat" data-key="openrouter_decisions">checking key…</span>
+                <button type="button" class="btn small ping" data-provider="openrouter_decisions">Test call</button>
+                <span class="ping-result" data-provider="openrouter_decisions"></span>
+              </div>
+            </div>
+          </label>
+
+          <label class="player" data-provider="openrouter_chat">
+            <input type="radio" name="player" value="openrouter_chat">
+            <div class="player-body">
+              <div class="player-title">Any LLM <small>via OpenRouter · chat completions</small></div>
+              <p>The same state and rules as a prompt; the LLM must reply with JSON. <code>POST openrouter.ai/api/v1/chat/completions</code></p>
+              <div class="player-row"><label class="inline">model <input id="modelOrChat" list="orModels" placeholder="openai/gpt-4o-mini" spellcheck="false" autocomplete="off"></label></div>
+              <datalist id="orModels"></datalist>
+              <div class="player-row"><small id="orModelInfo">loading model list…</small></div>
+              <div class="player-row"><small id="orModelPricing"></small></div>
+              <div class="player-row status">
+                <span class="keystat" data-key="openrouter_chat">checking key…</span>
+                <button type="button" class="btn small ping" data-provider="openrouter_chat">Test call</button>
+                <span class="ping-result" data-provider="openrouter_chat"></span>
+              </div>
+            </div>
+          </label>
+
+          <label class="player" data-provider="scripted">
+            <input type="radio" name="player" value="scripted">
+            <div class="player-body">
+              <div class="player-title">Scripted bot <small>no model · baseline</small></div>
+              <p>A fixed if/else on the same state, with artificial latency. Useful to show what latency alone does to the game.</p>
+              <div class="player-row"><label class="inline">simulated latency <output id="scriptedLatencyValue">150</output> ms<input type="range" id="scriptedLatency" min="0" max="3000" step="10" value="150"></label></div>
+            </div>
+          </label>
+
+          <label class="player" data-provider="human">
+            <input type="radio" name="player" value="human">
+            <div class="player-body">
+              <div class="player-title">You <small>keyboard</small></div>
+              <p>Space / ↑ to jump, ↓ to duck. Set a human reference score before the models play.</p>
+            </div>
+          </label>
+        </div>
+
+        <fieldset class="settings">
+          <legend>Game</legend>
+          <div class="setting">
+            <label for="speed">Speed <output id="speedValue">6.0</output> px / frame</label>
+            <input type="range" id="speed" min="3" max="13" step="0.5" value="6">
+            <small>Chrome starts at 6 and tops out at 13. Slower speeds give slow models a fighting chance.</small>
+          </div>
+          <div class="setting check">
+            <label><input type="checkbox" id="accelerate" checked> Accelerate over time, like Chrome</label>
+          </div>
+        </fieldset>
+
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <div class="setting">
+            <label for="stateFormat">State format sent to the model</label>
+            <select id="stateFormat">
+              <option value="json">JSON object</option>
+              <option value="text">Plain text sentences</option>
+            </select>
+          </div>
+          <div class="setting check">
+            <label><input type="checkbox" id="timingAssist" checked> Timing assist — include <code>jump_timing</code> (now / too_early / too_late), computed in code from the jump physics and the model's measured latency. Off: the model gets the raw numbers and the jump window instead.</label>
+          </div>
+          <div class="setting check">
+            <label><input type="checkbox" id="dangerQuestion" checked> Ask a second question in the same call — a <code>danger</code> score (0–3). Jev answers all questions in one pass.</label>
+          </div>
+          <div class="setting">
+            <label for="cadence">Call cadence</label>
+            <select id="cadence">
+              <option value="auto">Auto — Jev &amp; scripted: a new call every interval, in parallel · LLM: one call at a time</option>
+              <option value="interval">A new call every interval, without waiting for the previous answer</option>
+              <option value="sequential">One call at a time: the next request leaves when the answer arrives</option>
+            </select>
+            <label for="intervalMs" style="margin-top:6px">Interval <input type="number" id="intervalMs" min="30" max="5000" step="10" value="100"> ms</label>
+            <small>Calls are stateless, so they can overlap: with a 100 ms interval and 300 ms latency, three requests are in flight and a decision lands every 100 ms.</small>
+          </div>
+          <div class="setting check">
+            <label><input type="checkbox" id="showHitboxes"> Show hitboxes on the canvas</label>
+          </div>
+        </details>
+
+        <div class="setup-actions">
+          <button class="btn primary big" id="btnStart">Start</button>
+          <span class="hint" id="setupHint"></span>
+        </div>
+      </section>
+
+      <!-- ================================ game ================================ -->
+      <section id="gameWrap" class="game" hidden>
+        <div class="canvas-card">
+          <canvas id="game" width="600" height="150" aria-label="T-Rex runner"></canvas>
+          <div id="banner" class="banner" hidden></div>
+        </div>
+
+        <div id="overlay" class="gameover" hidden>
+          <div class="gameover-title">Game over</div>
+          <div class="ov-grid">
+            <div><b id="ovScore">0</b><span>score</span></div>
+            <div><b id="ovHigh">0</b><span>best for this player</span></div>
+            <div><b id="ovCalls">0</b><span>model calls</span></div>
+            <div><b id="ovLatency">—</b><span>avg latency</span></div>
+          </div>
+          <p id="ovReason"></p>
+          <div class="row">
+            <button class="btn primary" id="btnAgain">Play again <kbd>Space</kbd></button>
+            <button class="btn" id="btnChange">Change player / settings</button>
+          </div>
+        </div>
+
+        <div class="hud">
+          <div class="hud-card decision">
+            <div class="hud-label">last decision</div>
+            <div class="hud-action" id="hudAction">—</div>
+            <div class="hud-probs" id="hudProbs"></div>
+          </div>
+          <div class="hud-card">
+            <div class="hud-label" id="hudDangerLabel">danger (model's score, 0–3)</div>
+            <div class="meter"><i id="hudDangerBar"></i></div>
+            <div class="hud-sub" id="hudDanger">—</div>
+          </div>
+          <div class="hud-card">
+            <div class="hud-label">latency (upstream)</div>
+            <div class="hud-big" id="hudLatency">—</div>
+            <div class="hud-sub" id="hudLatencySub"></div>
+          </div>
+          <div class="hud-card">
+            <div class="hud-label">calls</div>
+            <div class="hud-big" id="hudCalls">0</div>
+            <div class="hud-sub" id="hudCallsSub"></div>
+          </div>
+          <div class="hud-card wide">
+            <div class="hud-label">what the model was told (latest call)</div>
+            <div class="hud-state" id="hudState">—</div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button class="btn" id="btnPause">Pause</button>
+          <button class="btn" id="btnRestart">Restart</button>
+          <button class="btn ghost" id="btnSettings">Settings</button>
+          <span class="controls-hint" id="controlsHint"></span>
+        </div>
+      </section>
+    </main>
+
+    <!-- ============================ live I/O panel ============================ -->
+    <aside id="panel" class="panel collapsed" aria-label="Model I/O">
+      <div class="panel-head">
+        <h2>Model I/O <small>live</small></h2>
+        <button class="btn ghost small" id="btnPanelClose">Close ✕</button>
+      </div>
+      <div class="panel-session" id="panelSession"></div>
+      <div class="panel-stats" id="panelStats"></div>
+      <div class="panel-tools">
+        <label><input type="checkbox" id="panelPinLatest" checked> expand latest</label>
+        <label><input type="checkbox" id="panelHideRun"> hide “run” answers</label>
+        <button class="btn ghost small" id="panelClear">Clear</button>
+      </div>
+      <div class="panel-list" id="panelList"></div>
+    </aside>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

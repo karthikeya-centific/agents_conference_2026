@@ -1,0 +1,14 @@
+{
+  "name": "jev-dino",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chrome's T-Rex runner played live by TypeSafe's Jev (a System One decision model) or by any LLM on OpenRouter, with a real-time panel showing every model call.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "start:mock": "node server.mjs --mock"
+  }
+}
