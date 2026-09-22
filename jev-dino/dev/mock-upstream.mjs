@@ -58,12 +58,15 @@ function factsFromObject(state, which = 'nearest') {
   const o = which === 'next' ? state.next_obstacle : state.nearest_obstacle;
   const t = state.timing || {};
   if (!o) return { hasObstacle: false };
+  // the compact state (used for small-context models) folds the flying height into `kind`
+  const flyingFromKind = typeof o.kind === 'string' ? (o.kind.match(/flying (low|mid|high)/) || [])[1] : null;
+  const dino = state.dino && typeof state.dino === 'object' ? state.dino.state : state.dino;
   return {
     hasObstacle: true,
-    airborne: state.dino && state.dino.state === 'jumping',
-    flying: o.flying_height ? o.flying_height.split(' ')[0] : null,
+    airborne: typeof dino === 'string' && dino.startsWith('jumping'),
+    flying: o.flying_height ? o.flying_height.split(' ')[0] : flyingFromKind || null,
     timing: o.jump_timing ? o.jump_timing.split(' ')[0] : null,
-    arrivesMs: o.arrives_in_ms_when_answer_lands != null ? o.arrives_in_ms_when_answer_lands : o.arrives_in_ms,
+    arrivesMs: o.arrives_in_ms_when_answer_lands != null ? o.arrives_in_ms_when_answer_lands : o.arrives_in_ms_after_your_answer != null ? o.arrives_in_ms_after_your_answer : o.arrives_in_ms,
     window: t.jump_window_ms ? { start: t.jump_window_ms.start_ms, end: t.jump_window_ms.end_ms } : null,
   };
 }

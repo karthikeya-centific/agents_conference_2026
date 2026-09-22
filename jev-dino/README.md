@@ -160,12 +160,45 @@ For the LLM player the *same* state and rules are sent as a system + user prompt
 
 ---
 
+## Laya: the open-weights option, running on your machine
+
+[Laya](https://laya.convaiinnovations.com/) is Convai Innovations' open System One model (Apache 2.0): the same
+idea as Jev — state plus typed `choice` / `score` / `noul` questions in, calibrated probabilities out, no text
+generation — with a ModernBERT-large backbone (about 421M parameters). It appears as its own player card and needs
+no key. Two ways to run it, tried in this order:
+
+1. **In-process (no Python).** In the game folder:
+
+   ```bash
+   npm install @receptron/laya      # Node/ONNX runtime; then restart node server.mjs
+   ```
+
+   Press **Load model** on the Laya card (or set `laya.autoload: true` in `config.mjs`). The first load downloads
+   about 1.7 GB of weights from Hugging Face into `~/.cache/receptron-laya`; later loads take seconds. Expect
+   roughly 100–200 ms per call on a recent laptop CPU with the game's three questions.
+
+2. **A local HTTP server.** With Python 3.10+:
+
+   ```bash
+   pip install laya                  # PyTorch + transformers, ~2 GB
+   python dev/laya_server.py         # first start downloads the checkpoint (~850 MB); serves http://127.0.0.1:8000
+   ```
+
+   Faster on a GPU or Apple Silicon (tens of ms per call). `--model english | multilingual | typed-decisions`
+   picks the checkpoint (default `typed-decisions`, 1,024-token context). The game finds the server at
+   `SETTINGS.laya.baseUrl` in `config.mjs`.
+
+Laya's English checkpoint keeps about 320 tokens of state and 192 tokens of question text, so the game sends Laya
+a **compact prompt**: the same facts, shorter words (Advanced → Prompt size shows it; you can force it for every
+model to compare like with like). Everything else is identical: same questions, same engine timing, same panel.
+
 ## Players
 
 | player | what happens | typical latency |
 |--------|--------------|-----------------|
 | **Jev — TypeSafe API** | `POST api.typesafe.ai/v1/systemone`, model `jev-latest` | ~100–300 ms |
 | **Jev — via OpenRouter** | same body to `openrouter.ai/api/alpha/decisions`, model `typesafe/jev-1.13` | ~150–400 ms |
+| **Laya — local** | same body to the in-process ONNX runtime, or to `127.0.0.1:8000/v1/systemone` | ~100–200 ms CPU, ~30 ms GPU |
 | **Any LLM — via OpenRouter** | chat completion with a JSON schema; pick any model id (live list is loaded); survives only at low speed | 0.7–10 s |
 | **Scripted bot** | a fixed if/else on the same state with a latency slider — shows what latency alone does | you choose |
 | **You** | keyboard (Space/↑ jump, ↓ duck) — set the human reference score | — |
@@ -203,6 +236,7 @@ For the LLM player the *same* state and rules are sent as a system + user prompt
 ├─ server.mjs            static files + /api/decide, /api/models, /api/ping, /api/config (keys never leave here)
 ├─ config.mjs            ← PASTE KEYS HERE; model names, port, pricing
 ├─ dev/mock-upstream.mjs offline imitation of both APIs (node server.mjs --mock)
+├─ dev/laya_server.py    serve Laya locally behind Jev's wire format (pip install laya)
 ├─ docs/screenshot.png
 └─ public/
    ├─ index.html, styles.css

@@ -21,10 +21,10 @@ import { FRAME_MS, describeType } from './game.js';
 
 export const ACTIONS = ['jump', 'duck', 'run'];
 
-const LATENCY_GUESS_MS = { typesafe: 350, openrouter_decisions: 450, openrouter_chat: 1500, scripted: 150 };
+const LATENCY_GUESS_MS = { typesafe: 350, openrouter_decisions: 450, openrouter_chat: 1500, scripted: 150, laya: 200 };
 // Jev's API queued up beyond two concurrent calls per key in testing; LLM gateways tolerate more, and slow
 // answers need more overlap to keep decisions flowing.
-const MAX_IN_FLIGHT = { typesafe: 2, openrouter_decisions: 2, openrouter_chat: 4, scripted: 4 };
+const MAX_IN_FLIGHT = { typesafe: 2, openrouter_decisions: 2, openrouter_chat: 4, scripted: 4, laya: 2 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 const r0 = (n) => Math.round(n);
@@ -125,6 +125,29 @@ export function buildState(snapshot, { latencyMs, execution = 'scheduled', timin
   return state;
 }
 
+/**
+ * A shorter version of the same state for small-context models (Laya's English checkpoint keeps
+ * about 320 tokens of state and 192 tokens of question header). Same facts, shorter words.
+ */
+export function compactState(state) {
+  const short = (o) => (o ? {
+    id: o.id,
+    kind: o.kind === 'pterodactyl' ? `pterodactyl flying ${o.flying_height.split(' ')[0]}` : `${o.count > 1 ? o.count + 'x ' : ''}${o.size} cactus`,
+    height_px: o.height_px,
+    distance_px: o.distance_px,
+    arrives_in_ms: o.arrives_in_ms,
+    ...(o.arrives_in_ms_when_answer_lands != null ? { arrives_in_ms_after_your_answer: o.arrives_in_ms_when_answer_lands } : {}),
+    ...(o.jump_timing ? { jump_timing: o.jump_timing.split(' ')[0] } : {}),
+  } : null);
+  return {
+    dino: state.dino.state + (state.dino.currently_jumping_over ? ` (clearing a ${state.dino.currently_jumping_over})` : ''),
+    speed_px_per_s: state.speed_px_per_s,
+    nearest_obstacle: short(state.nearest_obstacle),
+    next_obstacle: short(state.next_obstacle),
+    your_latency_ms: state.timing.your_recent_latency_ms,
+  };
+}
+
 /** The same facts as prose, for the "plain text" state format. */
 export function toProse(state) {
   const parts = [];
@@ -152,6 +175,11 @@ export function toProse(state) {
 
 function rulesText(opts) {
   const scheduled = opts.execution !== 'reflex';
+  if (opts.compact) {
+    return scheduled
+      ? 'Chrome dino game. The game times the key press; you decide per obstacle. Cactus or low pterodactyl: jump. Mid-height pterodactyl: duck. High pterodactyl: run.'
+      : 'Chrome dino game; the key is pressed when your answer lands. jump_timing now: jump. too_early: run. too_late: jump anyway. Mid pterodactyl close: duck. High pterodactyl: run.';
+  }
   if (scheduled) {
     return [
       'You decide what the T-Rex in the Chrome dinosaur game should do about the nearest obstacle; the game handles the exact timing.',
@@ -170,6 +198,22 @@ function rulesText(opts) {
 
 export function buildQuestions(opts, state = null) {
   const scheduled = opts.execution !== 'reflex';
+  if (opts.compact) {
+    const questions = {
+      action: {
+        type: 'choice',
+        instructions: `${rulesText(opts)} What about nearest_obstacle?`,
+        criteria: { jump: 'jump over it', duck: 'crouch under it', run: 'do nothing' },
+      },
+    };
+    if (scheduled && state && state.next_obstacle) {
+      questions.next_obstacle_action = { type: 'choice', instructions: 'And next_obstacle?', criteria: { jump: 'jump over it', duck: 'crouch under it', run: 'do nothing' } };
+    }
+    if (opts.dangerQuestion) {
+      questions.danger = { type: 'score', instructions: 'How dangerous is the situation for the dino?', criteria: ['safe', 'caution', 'urgent', 'critical'] };
+    }
+    return questions;
+  }
   const questions = {
     action: {
       type: 'choice',
@@ -214,11 +258,17 @@ export function buildQuestions(opts, state = null) {
 }
 
 export function buildDecisionPayload(model, state, opts) {
+  const sent = opts.compact ? compactState(state) : state;
   return {
     model,
-    state: opts.stateFormat === 'text' ? toProse(state) : state,
+    state: opts.stateFormat === 'text' ? (opts.compact ? compactProse(sent) : toProse(state)) : sent,
     questions: buildQuestions(opts, state),
   };
+}
+
+function compactProse(c) {
+  const o = (x) => (x ? `${x.kind}, ${x.height_px} px tall, ${x.distance_px} px ahead, arrives in ${x.arrives_in_ms} ms${x.arrives_in_ms_after_your_answer != null ? ` (${x.arrives_in_ms_after_your_answer} ms after your answer)` : ''}${x.jump_timing ? `, jump timing ${x.jump_timing}` : ''}` : 'none');
+  return `Dino ${c.dino} at ${c.speed_px_per_s} px/s. Nearest obstacle: ${o(c.nearest_obstacle)}. Next obstacle: ${o(c.next_obstacle)}. Your latency ${c.your_latency_ms} ms.`;
 }
 
 export function buildChatPayload(model, state, opts) {
@@ -261,18 +311,20 @@ export function buildChatPayload(model, state, opts) {
 
 export function parseDecisionResponse(json) {
   const a = json && json.answers && json.answers.action;
-  if (!a || a.type !== 'choice' || !ACTIONS.includes(a.choice)) {
+  if (!a || (a.type && a.type !== 'choice') || !ACTIONS.includes(a.choice)) {
     throw new Error(`Unexpected answer shape: ${JSON.stringify(json).slice(0, 200)}`);
   }
   const d = json.answers.danger;
   const nx = json.answers.next_obstacle_action;
+  const isChoice = (x) => x && (x.type ? x.type === 'choice' : typeof x.choice === 'string');
+  const isScore = (x) => x && (x.type ? x.type === 'score' : typeof x.score === 'number');
   return {
     action: a.choice,
     confidence: a.confidence,
     probabilities: a.probabilities,
-    nextAction: nx && nx.type === 'choice' && ACTIONS.includes(nx.choice) ? nx.choice : null,
-    nextProbabilities: nx && nx.type === 'choice' ? nx.probabilities : null,
-    danger: d && d.type === 'score' ? { score: d.score, confidence: d.confidence, probabilities: d.probabilities, legend: d.legend } : null,
+    nextAction: isChoice(nx) && ACTIONS.includes(nx.choice) ? nx.choice : null,
+    nextProbabilities: isChoice(nx) ? nx.probabilities : null,
+    danger: isScore(d) ? { score: d.score, confidence: d.confidence, probabilities: d.probabilities, legend: d.legend } : null,
     tokensIn: json.usage ? json.usage.input_tokens || 0 : 0,
     tokensOut: json.usage ? json.usage.output_tokens || 0 : 0,
     model: json.model,
@@ -375,6 +427,7 @@ export class Agent {
     this.game = game;
     this.panel = panel;
     this.options = { execution: 'scheduled', stateFormat: 'json', timingAssist: true, dangerQuestion: true, cadence: 'interval', intervalMs: 300, simulatedLatencyMs: 150, initialLatencyMs: null, pricing: {}, ...options };
+    if (this.options.compact == null) this.options.compact = provider === 'laya'; // small context: shorter prompt
     this.hooks = hooks;
     this.running = false;
     this.runId = 0;
@@ -589,7 +642,7 @@ export class Agent {
     if (this.provider === 'openrouter_chat') {
       return (parsed.tokensIn || 0) * (p.promptUsdPerToken || 0) + (parsed.tokensOut || 0) * (p.completionUsdPerToken || 0);
     }
-    if (this.provider === 'scripted') return 0;
+    if (this.provider === 'scripted' || this.provider === 'laya') return 0; // local: no per-call cost
     const perMillion = p.jevUsdPerMillionInputTokens != null ? p.jevUsdPerMillionInputTokens : 0.042;
     return (parsed.tokensIn || 0) * perMillion / 1e6;
   }

@@ -50,4 +50,19 @@ export const SETTINGS = {
   // Published Jev pricing, used for the running cost estimate in the panel
   // ($0.042 per million input tokens, output free).
   jevUsdPerMillionInputTokens: 0.042,
+
+  // Laya — open-weights System One model (Convai Innovations, Apache 2.0), runs locally, no key.
+  // Two ways, tried in this order:
+  //   1. in-process, via the Node/ONNX runtime:   npm install @receptron/laya   (in this folder;
+  //      ~1.7 GB of weights download from Hugging Face on first load, cached in ~/.cache/receptron-laya)
+  //   2. an HTTP server on this machine speaking Jev's wire format, e.g.
+  //      pip install laya && python dev/laya_server.py        (default http://127.0.0.1:8000)
+  laya: {
+    inProcess: true,                    // use @receptron/laya when it is installed
+    autoload: false,                    // load the in-process model at server start (else on first use / "Load model")
+    onnxSubfolder: null,                // checkpoint variant inside receptron/laya-onnx, e.g. 'multilingual'
+    threads: null,                      // onnxruntime intraOpNumThreads (null = runtime default)
+    baseUrl: 'http://127.0.0.1:8000',   // fallback: local Laya HTTP server
+    model: 'laya',                      // model name sent to an HTTP server
+  },
 };

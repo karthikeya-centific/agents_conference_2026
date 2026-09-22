@@ -16,6 +16,7 @@ const PLAYER_LABELS = {
   typesafe: 'Jev · TypeSafe API',
   openrouter_decisions: 'Jev · via OpenRouter',
   openrouter_chat: 'LLM · via OpenRouter',
+  laya: 'Laya · local',
   scripted: 'Scripted bot (no model)',
   human: 'Human · keyboard',
 };
@@ -92,7 +93,9 @@ async function loadConfig() {
     card.querySelector('.ping').disabled = !info.configured;
   }
   // Default model names from the server unless the user typed their own.
+  applyLayaStatus(providers.laya);
   if (!$('#modelTypesafe').value) $('#modelTypesafe').value = providers.typesafe.defaultModel;
+  if (!$('#modelLaya').value && providers.laya) $('#modelLaya').value = providers.laya.defaultModel;
   if (!$('#modelOrJev').value) $('#modelOrJev').value = providers.openrouter_decisions.defaultModel;
   if (!$('#modelOrChat').value) $('#modelOrChat').value = providers.openrouter_chat.defaultModel;
   fillDatalist(app.config.suggestedChatModels.map((id) => ({ id, name: id })));
@@ -102,6 +105,60 @@ async function loadConfig() {
     if (firstEnabled) firstEnabled.checked = true;
   }
   updateStartButton();
+}
+
+function applyLayaStatus(info) {
+  const card = $('.player[data-provider="laya"]');
+  const stat = card.querySelector('.keystat');
+  const radio = card.querySelector('input[type=radio]');
+  const loadBtn = $('#btnLayaLoad');
+  const detail = $('#layaInfo');
+  if (!info) { stat.textContent = 'not available in this server'; stat.className = 'keystat missing'; radio.disabled = true; card.classList.add('disabled'); return; }
+  const rt = info.runtime || {};
+  const http = info.http || {};
+  let text = '';
+  let ok = false;
+  let showLoad = false;
+  if (rt.status === 'ready') { text = `in-process · ${rt.model}`; ok = true; }
+  else if (rt.status === 'loading') {
+    const p = rt.progress;
+    const pct = p && p.total ? ` ${Math.round((p.received / p.total) * 100)}% of ${p.file || 'weights'}` : '';
+    text = `loading in-process model…${pct} (first time downloads ~1.7 GB)`; ok = false;
+  } else if (rt.status === 'idle') {
+    if (http.reachable) { text = `HTTP server at ${http.baseUrl} · ${http.detail || 'reachable'} (in-process runtime installed but not loaded)`; ok = true; showLoad = true; }
+    else { text = 'in-process runtime installed · model not loaded yet — press Load model (first time downloads ~1.7 GB)'; ok = true; showLoad = true; }
+  } else if (rt.status === 'error') {
+    text = `in-process load failed: ${rt.error}` + (http.reachable ? ` · using HTTP server at ${http.baseUrl}` : ''); ok = Boolean(http.reachable);
+  } else if (http.reachable) { text = `HTTP server at ${http.baseUrl} · ${http.detail || 'reachable'}`; ok = true; }
+  else { text = `not available — in the game folder run: npm install @receptron/laya (then restart), or start a local server: pip install laya && python dev/laya_server.py (expected at ${http.baseUrl})`; ok = false; }
+  app.layaEndpoint = rt.status === 'ready' ? 'in-process (@receptron/laya, ONNX Runtime)' : http.reachable ? `${http.baseUrl}/v1/systemone` : (info.endpoint || '');
+  stat.textContent = ok ? (rt.status === 'ready' ? 'ready · no key needed' : 'available · no key needed') : 'not set up';
+  stat.className = `keystat ${ok ? 'ok' : 'missing'}`;
+  detail.textContent = text;
+  radio.disabled = !ok;
+  card.classList.toggle('disabled', !ok);
+  card.querySelector('.ping').disabled = !ok;
+  loadBtn.hidden = !showLoad;
+  if (!ok && radio.checked) radio.checked = false;
+  if (rt.status === 'loading') setTimeout(refreshLayaStatus, 2000);
+}
+
+async function refreshLayaStatus() {
+  try {
+    const json = await (await fetch('/api/laya/status')).json();
+    if (json.ok) applyLayaStatus({ runtime: json.runtime, http: json.http, mode: json.mode, defaultModel: $('#modelLaya').value || 'laya' });
+  } catch { /* ignore */ }
+}
+
+async function loadLayaModel() {
+  const btn = $('#btnLayaLoad');
+  btn.disabled = true;
+  try {
+    const json = await (await fetch('/api/laya/load', { method: 'POST' })).json();
+    if (!json.ok) { $('#layaInfo').textContent = json.error; return; }
+    setTimeout(refreshLayaStatus, 500);
+  } catch (err) { $('#layaInfo').textContent = `load failed: ${err.message}`; }
+  finally { btn.disabled = false; }
 }
 
 async function loadOpenRouterModels() {
@@ -148,6 +205,7 @@ function bindSetup() {
   $('#modelOrChat').addEventListener('input', showModelPricing);
   $$('input[name=player]').forEach((r) => r.addEventListener('change', updateStartButton));
   $('#btnStart').addEventListener('click', () => startRun());
+  $('#btnLayaLoad').addEventListener('click', loadLayaModel);
   $$('.ping').forEach((btn) => btn.addEventListener('click', () => ping(btn.dataset.provider)));
   // Clicking anywhere on a card selects it (inputs inside stay usable).
   $$('.player').forEach((card) => card.addEventListener('click', (e) => {
@@ -178,7 +236,7 @@ function setHint(text, isError) {
 
 async function ping(provider) {
   const out = $(`.ping-result[data-provider="${provider}"]`);
-  const model = provider === 'typesafe' ? $('#modelTypesafe').value.trim() : provider === 'openrouter_decisions' ? $('#modelOrJev').value.trim() : $('#modelOrChat').value.trim();
+  const model = provider === 'typesafe' ? $('#modelTypesafe').value.trim() : provider === 'openrouter_decisions' ? $('#modelOrJev').value.trim() : provider === 'laya' ? ($('#modelLaya').value.trim() || 'laya') : $('#modelOrChat').value.trim();
   out.textContent = 'calling…';
   out.className = 'ping-result';
   try {
@@ -188,6 +246,7 @@ async function ping(provider) {
       const served = json.response && json.response.model ? ` · model ${json.response.model}` : '';
       out.textContent = `OK · ${json.latency_ms} ms${served}`;
       out.className = 'ping-result ok';
+      if (provider === 'laya') refreshLayaStatus();
       // Seed the agent's latency estimate with a real measurement (average of the pings so far).
       const prev = app.pingLatency[provider];
       app.pingLatency[provider] = prev ? Math.round(prev * 0.5 + json.latency_ms * 0.5) : json.latency_ms;
@@ -209,7 +268,9 @@ function readSettings() {
       typesafe: $('#modelTypesafe').value.trim() || 'jev-latest',
       openrouter_decisions: $('#modelOrJev').value.trim() || 'typesafe/jev-1.13',
       openrouter_chat: $('#modelOrChat').value.trim() || 'openai/gpt-4o-mini',
+      laya: $('#modelLaya').value.trim() || 'laya',
     },
+    compact: $('#compact').value,
     scriptedLatency: Number($('#scriptedLatency').value),
     speed: Number($('#speed').value),
     accelerate: $('#accelerate').checked,
@@ -229,7 +290,9 @@ function applySettings(s) {
     if (s.models.typesafe) $('#modelTypesafe').value = s.models.typesafe;
     if (s.models.openrouter_decisions) $('#modelOrJev').value = s.models.openrouter_decisions;
     if (s.models.openrouter_chat) $('#modelOrChat').value = s.models.openrouter_chat;
+    if (s.models.laya) $('#modelLaya').value = s.models.laya;
   }
+  if (s.compact) $('#compact').value = s.compact;
   if (s.scriptedLatency != null) $('#scriptedLatency').value = s.scriptedLatency;
   if (s.speed != null) $('#speed').value = s.speed;
   if (s.accelerate != null) $('#accelerate').checked = s.accelerate;
@@ -268,11 +331,11 @@ function startRun() {
   app.panel.setSession({
     providerLabel: PLAYER_LABELS[s.player],
     model,
-    endpoint: providerInfo ? providerInfo.endpoint : s.player === 'scripted' ? '(rule of thumb in the browser)' : '(no model calls)',
+    endpoint: s.player === 'laya' && app.layaEndpoint ? app.layaEndpoint : providerInfo ? providerInfo.endpoint : s.player === 'scripted' ? '(rule of thumb in the browser)' : '(no model calls)',
     method: providerInfo ? 'POST' : '',
     stateFormat: s.stateFormat,
     cadence: s.player === 'human' ? '' : (effectiveCadence(s) === 'interval' ? `a new call every ${s.intervalMs} ms, at most 2 in flight` : 'one call at a time') + (s.execution === 'reflex' ? ' · reflex: key pressed when the answer lands' : ' · harness-timed: the game presses at the right frame'),
-    note: s.player === 'scripted' ? 'The scripted bot applies a fixed if/else to the same state, with artificial latency. It is the baseline, not a model.' : s.player === 'human' ? 'Keyboard: Space / ↑ jump, ↓ duck.' : '',
+    note: s.player === 'scripted' ? 'The scripted bot applies a fixed if/else to the same state, with artificial latency. It is the baseline, not a model.' : s.player === 'human' ? 'Keyboard: Space / ↑ jump, ↓ duck.' : s.player === 'laya' ? 'Laya runs on this machine (open weights, Apache 2.0). It gets a compact prompt because its context is 512 tokens.' : '',
   });
   const cadence = effectiveCadence(s) === 'interval' ? `a call every ${s.intervalMs} ms` : 'one call at a time';
   app.panel.divider(`new run · ${PLAYER_LABELS[s.player]} · ${model} · speed ${s.speed}${s.accelerate ? ' + acceleration' : ''} · ${cadence}`);
@@ -297,6 +360,7 @@ function startRun() {
       panel: app.panel,
       options: {
         execution: s.execution,
+        compact: s.compact === 'compact' ? true : s.compact === 'full' ? false : null,
         initialLatencyMs: app.pingLatency[s.player] || null,
         stateFormat: s.stateFormat,
         timingAssist: s.timingAssist,
@@ -320,6 +384,7 @@ function effectiveCadence(s) {
 
 function pricingFor(s) {
   const out = { jevUsdPerMillionInputTokens: app.config ? app.config.jevUsdPerMillionInputTokens : 0.042 };
+  if (s.player === 'laya') out.jevUsdPerMillionInputTokens = 0;
   if (s.player === 'openrouter_chat') {
     const m = app.orModels.get(s.models.openrouter_chat);
     if (m) { out.promptUsdPerToken = m.prompt_usd_per_token || 0; out.completionUsdPerToken = m.completion_usd_per_token || 0; }

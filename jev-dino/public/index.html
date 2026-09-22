@@ -89,6 +89,22 @@
             </div>
           </label>
 
+          <label class="player" data-provider="laya">
+            <input type="radio" name="player" value="laya">
+            <div class="player-body">
+              <div class="player-title">Laya <small>open weights · runs on this machine</small></div>
+              <p>Convai Innovations' System One model (Apache 2.0): same state + typed questions in, probabilities out, no key, no cloud. <code>npm install @receptron/laya</code> or <code>python dev/laya_server.py</code></p>
+              <div class="player-row"><label class="inline">model <input id="modelLaya" placeholder="laya" spellcheck="false"></label></div>
+              <div class="player-row"><small id="layaInfo">checking…</small></div>
+              <div class="player-row status">
+                <span class="keystat" data-key="laya">checking…</span>
+                <button type="button" class="btn small" id="btnLayaLoad" hidden>Load model</button>
+                <button type="button" class="btn small ping" data-provider="laya">Test call</button>
+                <span class="ping-result" data-provider="laya"></span>
+              </div>
+            </div>
+          </label>
+
           <label class="player" data-provider="scripted">
             <input type="radio" name="player" value="scripted">
             <div class="player-body">
@@ -141,6 +157,14 @@
           </div>
           <div class="setting check">
             <label><input type="checkbox" id="dangerQuestion" checked> Ask a second question in the same call — a <code>danger</code> score (0–3). Jev answers all questions in one pass.</label>
+          </div>
+          <div class="setting">
+            <label for="compact">Prompt size</label>
+            <select id="compact">
+              <option value="auto">Auto — full prompt for Jev and LLMs, compact prompt for Laya (its context is 512 tokens)</option>
+              <option value="full">Full prompt for every model</option>
+              <option value="compact">Compact prompt for every model</option>
+            </select>
           </div>
           <div class="setting">
             <label for="cadence">Call cadence</label>
